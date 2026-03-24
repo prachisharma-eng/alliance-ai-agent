@@ -120,7 +120,7 @@ function App(){
     setLoading(true);
     try{
       const history=updated.map(m=>({role:m.role==="assistant"?"assistant":"user",content:m.text}));
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
+      const res=await fetch("/api/chat",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:SYSTEM_PROMPT(bank,lang),messages:history})
