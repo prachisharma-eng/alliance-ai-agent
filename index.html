@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Alliance AI Agent — Razorpay</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',sans-serif;background:#0f1117;color:#e2e8f0}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:#1a1d2e}
+  ::-webkit-scrollbar-thumb{background:#2d3748;border-radius:4px}
+  input,textarea,select{font-family:'Inter',sans-serif}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useRef,useEffect}=React;
+
+const LANGUAGES=[
+  {code:"en",label:"English",flag:"🇬🇧"},
+  {code:"hi",label:"हिंदी",flag:"🇮🇳"},
+  {code:"mr",label:"मराठी",flag:"🟠"},
+];
+
+const BANKS={
+  hdfc:{id:"hdfc",name:"HDFC Bank",spoc:"Prachi Sharma",email:"prachi.sharma@razorpay.com",sla:"4 hrs",color:"#004C8F",logo:"🏦",serviceEmail:"collectnow-service@razorpay.com"},
+  bob:{id:"bob",name:"Bank of Baroda",spoc:"Prachi Sharma",email:"prachi.sharma@razorpay.com",sla:"6 hrs",color:"#F47920",logo:"🏛️",serviceEmail:"bob-service@razorpay.com"},
+};
+
+const RAZORPAY_KB=`
+RAZORPAY KNOWLEDGE BASE:
+## Payment Page
+- A Payment Page is a hosted page where customers can pay. Create via Dashboard: Home > Payment Pages > Create Payment Page. Add title, description, amount, image. Share the URL directly with customers. No coding needed.
+## Payment Link
+- Payment Links are URLs sent via SMS/email to collect payments without a website. Create via Dashboard > Payment Links > Create. Or via API: POST https://api.razorpay.com/v1/payment_links with amount (in paise), currency, description. Supports cards, UPI, netbanking, wallets.
+## API Keys vs App Keys
+- They are the SAME. Razorpay has one set of API keys (key_id + key_secret) universal for all whitelisted websites and apps under one Merchant ID. Generate from Dashboard > Account & Settings > API Keys. Separate keys for Test Mode and Live Mode.
+## Supported Languages / SDKs
+- Official SDKs: Python, PHP, Java, Node.js, Ruby, Go, .NET. Frontend: JavaScript, Android (Java/Kotlin), iOS (Swift), React Native, Flutter.
+## Settlement
+- Standard settlements T+1 business days. Delays due to bank holidays, high volume, or technical issues.
+## Recon
+- Recon files in Dashboard > Account > Downloads. Common mismatches: timing differences, failed-pending transactions, duplicate entries.
+## Onboarding
+- Standard 2-4 weeks. Netbanking activation: 5-7 business days post UAT sign-off.
+## Transaction Failures
+- Common causes: Insufficient funds, wrong OTP, card blocked, bank timeout, daily limit exceeded.
+`;
+
+const SYSTEM_PROMPT=(bank,lang)=>`You are an AI Alliance SPOC Agent for Razorpay Banking Alliance, assigned to ${bank.name}. SPOC: ${bank.spoc} (${bank.email}).
+${RAZORPAY_KB}
+ROUTING RULES:
+1. Payment Page/Link queries → Answer from KB (L1)
+2. API Keys vs App Keys → Same thing, explain clearly (L1)
+3. Supported Languages → List all SDKs (L1)
+4. MDR/Commercial queries → Tell user to email ${bank.spoc} at ${bank.email} with: desired category, MCC code, website URL. escalate:true, type:"mdr_email"
+5. Transaction failures → Do L1 analysis. If impact >100-200 transactions, escalate. type:"txn_failure"
+6. Onboarding/Netbanking activation → Auto-redirect to ${bank.serviceEmail}. type:"onboarding_redirect", escalate:true
+7. Settlement/Recon → Handle L1 if general, escalate if specific unresolved. type:"settlement" or "recon"
+8. Out of scope → Politely decline, suggest contacting ${bank.spoc}
+
+LANGUAGE: Respond ONLY in ${lang.label}.
+End every response with this exact JSON:
+{"level":"L1 or L2","category":"payment_page|payment_link|api_keys|languages|mdr|txn_failure|onboarding|settlement|recon|other","escalate":true or false,"type":"mdr_email|txn_failure|onboarding_redirect|settlement|recon|general","summary":"one line in English"}
+Max 180 words. Be professional and empathetic.`;
+
+function getBankFromURL(){
+  try{
+    const p=new URLSearchParams(window.location.search);
+    const b=p.get("bank")?.toLowerCase();
+    if(b&&BANKS[b])return BANKS[b];
+  }catch{}
+  return null;
+}
+
+function App(){
+  const bankFromURL=getBankFromURL();
+  const[view,setView]=useState(bankFromURL?"chat":"select");
+  const[bank,setBank]=useState(bankFromURL||null);
+  const[tab,setTab]=useState("chat");
+  const[lang,setLang]=useState(LANGUAGES[0]);
+  const[messages,setMessages]=useState([]);
+  const[input,setInput]=useState("");
+  const[loading,setLoading]=useState(false);
+  const[notifications,setNotifications]=useState([]);
+  const[emailForm,setEmailForm]=useState({from:"",subject:"",body:""});
+  const[allChats,setAllChats]=useState({hdfc:[],bob:[]});
+  const[stats,setStats]=useState({total:0,l1:0,l2:0,mdr:0,txn:0,onboarding:0});
+  const bottomRef=useRef(null);
+
+  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"})},[messages]);
+  useEffect(()=>{if(bank)setMessages([{role:"assistant",text:getWelcome(bank,lang),meta:null}])},[bank]);
+
+  const getWelcome=(b,l)=>{
+    if(l.code==="hi")return`नमस्ते! मैं ${b.name} के लिए Razorpay का AI Alliance Agent हूँ। Settlement, recon, API, onboarding queries में मदद कर सकता हूँ।`;
+    if(l.code==="mr")return`नमस्कार! मी ${b.name} साठी Razorpay चा AI Alliance Agent आहे। Settlement, recon, API, onboarding संबंधित मदत करू शकतो.`;
+    return`Hi! I'm the AI Alliance Agent for ${b.name} (Razorpay Banking Alliance). I can help with payment pages, payment links, API queries, settlements, recon, onboarding, and more. How can I assist you?`;
+  };
+
+  const parseResponse=(text)=>{
+    try{
+      const m=text.match(/\{[\s\S]*?"level"[\s\S]*?\}/);
+      if(m){const meta=JSON.parse(m[0]);return{clean:text.replace(m[0],"").trim(),meta};}
+    }catch{}
+    return{clean:text,meta:null};
+  };
+
+  const sendMessage=async(msgText,isEmail=false,emailMeta=null)=>{
+    if(!msgText.trim()||loading||!bank)return;
+    const display=isEmail?`📧 [Email from ${emailMeta?.from}]\nSubject: ${emailMeta?.subject}\n\n${msgText}`:msgText;
+    const newUser={role:"user",text:display};
+    const updated=[...messages,newUser];
+    setMessages(updated);
+    setInput("");
+    setLoading(true);
+    try{
+      const history=updated.map(m=>({role:m.role==="assistant"?"assistant":"user",content:m.text}));
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:SYSTEM_PROMPT(bank,lang),messages:history})
+      });
+      const data=await res.json();
+      const raw=data.content?.[0]?.text||"Sorry, I couldn't process that.";
+      const{clean,meta}=parseResponse(raw);
+      const aMsg={role:"assistant",text:clean,meta};
+      const final=[...updated,aMsg];
+      setMessages(final);
+      setAllChats(prev=>({...prev,[bank.id]:final}));
+      setStats(prev=>({
+        total:prev.total+1,
+        l1:meta?.level==="L1"?prev.l1+1:prev.l1,
+        l2:meta?.level==="L2"?prev.l2+1:prev.l2,
+        mdr:meta?.type==="mdr_email"?prev.mdr+1:prev.mdr,
+        txn:meta?.type==="txn_failure"?prev.txn+1:prev.txn,
+        onboarding:meta?.type==="onboarding_redirect"?prev.onboarding+1:prev.onboarding,
+      }));
+      if(meta?.escalate){
+        setNotifications(prev=>[{
+          id:Date.now(),bank:bank.name,bankId:bank.id,spoc:bank.spoc,
+          summary:meta.summary,type:meta.type,category:meta.category,
+          time:new Date().toLocaleTimeString(),read:false,
+          action:meta.type==="mdr_email"?`Email ${bank.spoc} with MDR details`:
+                 meta.type==="onboarding_redirect"?`Forwarded to ${bank.serviceEmail}`:
+                 meta.type==="txn_failure"?"High impact transaction failure — review needed":"Review required"
+        },...prev]);
+      }
+    }catch{
+      setMessages(prev=>[...prev,{role:"assistant",text:"⚠️ Error. Please try again.",meta:null}]);
+    }
+    setLoading(false);
+  };
+
+  const unread=notifications.filter(n=>!n.read).length;
+  const tc=(t)=>({mdr_email:"#7c3aed",txn_failure:"#ef4444",onboarding_redirect:"#0891b2",settlement:"#d97706",recon:"#059669",general:"#6366f1"}[t]||"#6366f1");
+  const tl=(t)=>({mdr_email:"💼 MDR Query",txn_failure:"⚠️ Txn Failure",onboarding_redirect:"🔀 Onboarding",settlement:"💰 Settlement",recon:"📊 Recon",general:"💬 General"}[t]||t);
+
+  const s={
+    page:{fontFamily:"Inter,sans-serif",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0",display:"flex",flexDirection:"column"},
+    header:{background:"#1a1d2e",borderBottom:"1px solid #2d3748",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"},
+    bubble_user:{maxWidth:"78%",background:`linear-gradient(135deg,${bank?.color||"#6366f1"},#6366f1)`,borderRadius:"16px 16px 4px 16px",padding:"10px 14px",fontSize:13,lineHeight:1.6,color:"#e2e8f0",whiteSpace:"pre-wrap"},
+    bubble_ai:{maxWidth:"78%",background:"#1e2035",borderRadius:"16px 16px 16px 4px",padding:"10px 14px",fontSize:13,lineHeight:1.6,color:"#e2e8f0",whiteSpace:"pre-wrap"},
+  };
+
+  if(view==="select"){return(
+    <div style={{...s.page,alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{marginBottom:32,textAlign:"center"}}>
+        <div style={{fontSize:40,marginBottom:8}}>🤖</div>
+        <div style={{fontSize:22,fontWeight:800,color:"#fff"}}>Alliance AI Agent</div>
+        <div style={{fontSize:13,color:"#6366f1",marginTop:4}}>Razorpay Banking Alliance · Virtual SPOC</div>
+        <div style={{fontSize:12,color:"#4a5568",marginTop:8}}>Select your bank to continue</div>
+      </div>
+      <div style={{display:"flex",gap:16,flexWrap:"wrap",justifyContent:"center"}}>
+        {Object.values(BANKS).map(b=>(
+          <div key={b.id} onClick={()=>{setBank(b);setView("chat");setMessages([{role:"assistant",text:getWelcome(b,lang),meta:null}]);}}
+            style={{background:"#1a1d2e",border:`2px solid ${b.color}`,borderRadius:16,padding:"28px 36px",cursor:"pointer",textAlign:"center",minWidth:160,transition:"transform 0.2s"}}
+            onMouseOver={e=>e.currentTarget.style.transform="scale(1.04)"}
+            onMouseOut={e=>e.currentTarget.style.transform="scale(1)"}>
+            <div style={{fontSize:36,marginBottom:10}}>{b.logo}</div>
+            <div style={{fontWeight:700,fontSize:15,color:"#fff"}}>{b.name}</div>
+            <div style={{fontSize:11,color:"#4a5568",marginTop:4}}>SPOC: {b.spoc.split(" ")[0]}</div>
+            <div style={{fontSize:11,marginTop:8,padding:"3px 10px",background:b.color+"22",color:b.color,borderRadius:20}}>Open Chat →</div>
+          </div>
+        ))}
+      </div>
+      <div style={{marginTop:24,fontSize:11,color:"#2d3748",textAlign:"center"}}>Partner URLs: ?bank=hdfc · ?bank=bob</div>
+    </div>
+  );}
+
+  return(
+    <div style={s.page}>
+      {/* Header */}
+      <div style={s.header}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          {!bankFromURL&&<span onClick={()=>setView("select")} style={{cursor:"pointer",fontSize:18,marginRight:4}}>←</span>}
+          <div style={{width:30,height:30,background:`linear-gradient(135deg,${bank.color},#6366f1)`,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>{bank.logo}</div>
+          <div>
+            <div style={{fontWeight:700,fontSize:14,color:"#fff"}}>{bank.name} · AI Alliance Agent</div>
+            <div style={{fontSize:10,color:"#6366f1"}}>SPOC: {bank.spoc} · SLA: {bank.sla}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <div style={{display:"flex",background:"#13151f",borderRadius:20,overflow:"hidden",border:"1px solid #2d3748"}}>
+            {LANGUAGES.map(l=>(
+              <div key={l.code} onClick={()=>setLang(l)}
+                style={{padding:"3px 10px",cursor:"pointer",fontSize:11,background:lang.code===l.code?"linear-gradient(135deg,#6366f1,#8b5cf6)":"transparent",color:lang.code===l.code?"#fff":"#6b7280"}}>
+                {l.flag} {l.label}
+              </div>
+            ))}
+          </div>
+          <div style={{background:"#1e2035",borderRadius:20,padding:"3px 10px",fontSize:11,color:"#10b981"}}>● Live</div>
+        </div>
+      </div>
+
+      {/* Tabs — SPOC only */}
+      {!bankFromURL&&(
+        <div style={{display:"flex",background:"#13151f",borderBottom:"1px solid #2d3748"}}>
+          {[["chat","💬 Partner Chat"],["email","📧 Email Manager"],["dashboard","📊 SPOC Dashboard"]].map(([t,label])=>(
+            <div key={t} onClick={()=>setTab(t)} style={{padding:"9px 18px",cursor:"pointer",fontSize:12,fontWeight:500,color:tab===t?"#6366f1":"#4a5568",borderBottom:tab===t?"2px solid #6366f1":"2px solid transparent"}}>
+              {t==="dashboard"&&unread>0?`${label} (${unread})`:label}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* CHAT */}
+      {(tab==="chat"||bankFromURL)&&(
+        <div style={{flex:1,display:"flex",flexDirection:"column",height:bankFromURL?"calc(100vh - 57px)":"calc(100vh - 98px)"}}>
+          <div style={{flex:1,overflowY:"auto",padding:16,display:"flex",flexDirection:"column",gap:10}}>
+            {messages.map((m,i)=>(
+              <div key={i} style={{display:"flex",flexDirection:"column",alignItems:m.role==="user"?"flex-end":"flex-start",gap:4}}>
+                <div style={m.role==="user"?s.bubble_user:s.bubble_ai}>{m.text}</div>
+                {m.meta&&(
+                  <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                    <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:m.meta.level==="L1"?"#064e3b":"#78350f",color:m.meta.level==="L1"?"#10b981":"#f59e0b"}}>{m.meta.level} · {m.meta.category}</span>
+                    {m.meta.escalate&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:tc(m.meta.type)+"22",color:tc(m.meta.type)}}>{tl(m.meta.type)} → {bank.spoc}</span>}
+                  </div>
+                )}
+              </div>
+            ))}
+            {loading&&<div style={{display:"flex"}}><div style={{background:"#1e2035",borderRadius:"16px 16px 16px 4px",padding:"10px 14px",fontSize:13,color:"#6366f1"}}>Thinking...</div></div>}
+            <div ref={bottomRef}/>
+          </div>
+          <div style={{padding:"6px 14px",display:"flex",gap:5,flexWrap:"wrap",borderTop:"1px solid #1a1d2e"}}>
+            {["Why is my settlement delayed?","Recon file has mismatches","How to create a payment link?","API key vs App key?","When will netbanking activate?","Transaction failures — 150+ impacted","MDR query for my MCC"].map(q=>(
+              <div key={q} onClick={()=>sendMessage(q)} style={{fontSize:11,padding:"3px 9px",background:"#1e2035",borderRadius:20,cursor:"pointer",color:"#6366f1",border:"1px solid #2d3748"}}>{q}</div>
+            ))}
+          </div>
+          <div style={{padding:"10px 14px",borderTop:"1px solid #2d3748",background:"#13151f",display:"flex",gap:8}}>
+            <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendMessage(input)}
+              placeholder={`Ask about ${bank.name}...`}
+              style={{flex:1,background:"#1e2035",border:"1px solid #2d3748",borderRadius:10,padding:"9px 12px",color:"#e2e8f0",fontSize:13,outline:"none"}}/>
+            <button onClick={()=>sendMessage(input)} disabled={loading||!input.trim()}
+              style={{background:`linear-gradient(135deg,${bank.color},#6366f1)`,border:"none",borderRadius:10,padding:"9px 16px",color:"#fff",fontWeight:600,cursor:"pointer",fontSize:13}}>Send</button>
+          </div>
+        </div>
+      )}
+
+      {/* EMAIL MANAGER */}
+      {tab==="email"&&!bankFromURL&&(
+        <div style={{flex:1,overflowY:"auto",padding:20,display:"flex",gap:20,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:280,maxWidth:500}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#fff",marginBottom:12}}>📧 Incoming Email Query Simulator</div>
+            <div style={{background:"#1e2035",borderRadius:12,padding:16,display:"flex",flexDirection:"column",gap:12}}>
+              <div>
+                <div style={{fontSize:11,color:"#4a5568",marginBottom:4}}>Bank</div>
+                <select value={bank.id} onChange={e=>setBank(BANKS[e.target.value])}
+                  style={{width:"100%",background:"#13151f",border:"1px solid #2d3748",borderRadius:8,padding:"8px 12px",color:"#e2e8f0",fontSize:13,outline:"none"}}>
+                  {Object.values(BANKS).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}
+                </select>
+              </div>
+              {[{label:"From",key:"from",ph:"partner@bankofbaroda.com"},{label:"Subject",key:"subject",ph:"Settlement delay — March 22nd"}].map(f=>(
+                <div key={f.key}>
+                  <div style={{fontSize:11,color:"#4a5568",marginBottom:4}}>{f.label}</div>
+                  <input value={emailForm[f.key]} onChange={e=>setEmailForm(p=>({...p,[f.key]:e.target.value}))} placeholder={f.ph}
+                    style={{width:"100%",background:"#13151f",border:"1px solid #2d3748",borderRadius:8,padding:"8px 12px",color:"#e2e8f0",fontSize:13,outline:"none"}}/>
+                </div>
+              ))}
+              <div>
+                <div style={{fontSize:11,color:"#4a5568",marginBottom:4}}>Email Body</div>
+                <textarea value={emailForm.body} onChange={e=>setEmailForm(p=>({...p,body:e.target.value}))} rows={4} placeholder="Type the email content here..."
+                  style={{width:"100%",background:"#13151f",border:"1px solid #2d3748",borderRadius:8,padding:"8px 12px",color:"#e2e8f0",fontSize:13,outline:"none",resize:"vertical"}}/>
+              </div>
+              <button onClick={()=>{sendMessage(emailForm.body||emailForm.subject,true,emailForm);setTab("chat");}}
+                disabled={loading||(!emailForm.body&&!emailForm.subject)}
+                style={{background:"linear-gradient(135deg,#6366f1,#8b5cf6)",border:"none",borderRadius:8,padding:10,color:"#fff",fontWeight:600,cursor:"pointer",fontSize:13}}>
+                🚀 Send to AI Agent
+              </button>
+            </div>
+          </div>
+          <div style={{flex:1,minWidth:280}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#fff",marginBottom:12}}>📋 Recent Escalations</div>
+            {notifications.length===0
+              ?<div style={{fontSize:13,color:"#4a5568",padding:20}}>No escalations yet.</div>
+              :notifications.map(n=>(
+                <div key={n.id} style={{background:"#1e2035",borderRadius:10,padding:12,marginBottom:8,borderLeft:`3px solid ${tc(n.type)}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <span style={{fontSize:12,fontWeight:700,color:"#fff"}}>{n.bank}</span>
+                    <span style={{fontSize:10,color:"#4a5568"}}>{n.time}</span>
+                  </div>
+                  <div style={{fontSize:11,color:tc(n.type),marginBottom:3}}>{tl(n.type)}</div>
+                  <div style={{fontSize:12,color:"#a0aec0"}}>{n.action}</div>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* DASHBOARD */}
+      {tab==="dashboard"&&!bankFromURL&&(
+        <div style={{flex:1,overflowY:"auto",padding:20}}>
+          <div style={{display:"flex",gap:12,marginBottom:20,flexWrap:"wrap"}}>
+            {[{label:"Total Queries",val:stats.total,color:"#6366f1"},{label:"L1 Auto-resolved",val:stats.l1,color:"#10b981"},{label:"L2 Escalated",val:stats.l2,color:"#f59e0b"},{label:"MDR Queries",val:stats.mdr,color:"#7c3aed"},{label:"Txn Failures",val:stats.txn,color:"#ef4444"},{label:"Onboarding Redirected",val:stats.onboarding,color:"#0891b2"}].map(s=>(
+              <div key={s.label} style={{background:"#1e2035",borderRadius:10,padding:"12px 18px",minWidth:110,borderTop:`3px solid ${s.color}`}}>
+                <div style={{fontSize:22,fontWeight:800,color:s.color}}>{s.val}</div>
+                <div style={{fontSize:11,color:"#4a5568",marginTop:2}}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#fff"}}>🔔 SPOC Alerts</div>
+            {unread>0&&<div onClick={()=>setNotifications(p=>p.map(n=>({...n,read:true})))} style={{fontSize:12,color:"#6366f1",cursor:"pointer"}}>Mark all read</div>}
+          </div>
+          {notifications.length===0
+            ?<div style={{textAlign:"center",padding:40,color:"#4a5568",fontSize:14}}>✅ No escalations — AI Agent is handling everything!</div>
+            :notifications.map(n=>(
+              <div key={n.id} onClick={()=>setNotifications(p=>p.map(x=>x.id===n.id?{...x,read:true}:x))}
+                style={{background:n.read?"#1a1d2e":"#1e2035",border:`1px solid ${n.read?"#2d3748":tc(n.type)}`,borderRadius:10,padding:14,marginBottom:10,cursor:"pointer"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:6,alignItems:"center"}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    {!n.read&&<div style={{width:8,height:8,background:tc(n.type),borderRadius:"50%"}}/>}
+                    <span style={{fontWeight:700,fontSize:13,color:"#fff"}}>{n.bank}</span>
+                    <span style={{fontSize:11,padding:"2px 8px",background:tc(n.type)+"22",color:tc(n.type),borderRadius:10}}>{tl(n.type)}</span>
+                  </div>
+                  <span style={{fontSize:11,color:"#4a5568"}}>{n.time}</span>
+                </div>
+                <div style={{fontSize:12,color:"#a0aec0",marginBottom:4}}>{n.summary}</div>
+                <div style={{fontSize:11,color:"#6366f1"}}>👤 {n.action}</div>
+              </div>
+            ))}
+          <div style={{marginTop:24}}>
+            <div style={{fontSize:14,fontWeight:700,color:"#fff",marginBottom:12}}>💬 Bank Chat Histories</div>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              {Object.values(BANKS).map(b=>(
+                <div key={b.id} style={{flex:1,minWidth:200,background:"#1e2035",borderRadius:10,padding:12,borderTop:`3px solid ${b.color}`}}>
+                  <div style={{fontWeight:700,fontSize:13,color:"#fff",marginBottom:8}}>{b.logo} {b.name}</div>
+                  <div style={{fontSize:11,color:"#4a5568"}}>{allChats[b.id].filter(m=>m.role==="user").length} queries received</div>
+                  <div onClick={()=>{setBank(b);setMessages(allChats[b.id].length?allChats[b.id]:[{role:"assistant",text:getWelcome(b,lang),meta:null}]);setTab("chat");}}
+                    style={{marginTop:8,fontSize:11,color:b.color,cursor:"pointer"}}>View Chat →</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
